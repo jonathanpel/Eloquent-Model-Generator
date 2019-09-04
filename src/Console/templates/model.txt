@@ -3,13 +3,13 @@
 use Illuminate\Database\Eloquent\Model;
 
 class $NAME$ extends Model {
-
+$USES$
     /**
      * Generated
      */
 
     protected $table = '$TABLENAME$';
-    protected $fillable = [$FILLABLE$];
+    protected $fillable = [$FILLABLE$];$RELATIONS$
 
 $FUNCTIONS$
 

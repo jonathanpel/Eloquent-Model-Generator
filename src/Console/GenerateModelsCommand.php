@@ -10,6 +10,10 @@ use Way\Generators\Generator;
 use Way\Generators\Filesystem\Filesystem;
 use Way\Generators\Compilers\TemplateCompiler;
 use Illuminate\Contracts\Config\Repository as Config;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class GenerateModelsCommand extends GeneratorCommand
 {
@@ -72,8 +76,10 @@ class GenerateModelsCommand extends GeneratorCommand
             ['connection', 'c', InputOption::VALUE_OPTIONAL, 'The database connection to use.', $this->config->get('database.default')],
             ['tables', 't', InputOption::VALUE_OPTIONAL, 'A list of Tables you wish to Generate Migrations for separated by a comma: users,posts,comments'],
             ['path', 'p', InputOption::VALUE_OPTIONAL, 'Where should the file be created?'],
-            ['namespace', 'ns', InputOption::VALUE_OPTIONAL, 'Explicitly set the namespace'],
+            ['namespace', 'm', InputOption::VALUE_OPTIONAL, 'Explicitly set the namespace'],
             ['overwrite', 'o', InputOption::VALUE_NONE, 'Overwrite existing models ?'],
+            ['trait-overwrite', 'f', InputOption::VALUE_NONE, 'Overwrite existing trait ?'],
+            ['relations', 'r', InputOption::VALUE_NONE, 'Generate property with the model relation infos and a trait to acces certain protected properties ?'],
         ];
     }
 
@@ -82,7 +88,7 @@ class GenerateModelsCommand extends GeneratorCommand
      *
      * @return mixed
      */
-    public function fire()
+    public function handle()
     {
         //0. determine destination folder
         $destinationFolder = $this->getFileGenerationPath();
@@ -104,7 +110,42 @@ class GenerateModelsCommand extends GeneratorCommand
         $this->info("Generating Eloquent models\n");
         $this->generateEloquentModels($destinationFolder, $eloquentRules);
 
+        if ($this->option('relations')) {
+            $this->generateTrait($destinationFolder);
+        }
+
         $this->info("\nAll done!");
+    }
+
+    private function generateTrait($destinationFolder)
+    {
+        $filePathToGenerate = $destinationFolder . '/GenericModelTrait.php';
+        if (file_exists($filePathToGenerate)) {
+            if ($this->option('trait-overwrite')) {
+                $deleted = unlink($filePathToGenerate);
+                if (!$deleted) {
+                    $this->warn("Failed to delete existing model $filePathToGenerate");
+                    return false;
+                }
+            } else {
+                $this->warn("Skipped trait generation, file already exists. (force using --trait-overwrite) $filePathToGenerate");
+                return false;
+            }
+        }
+
+        $functions = '';
+        $templateData = [
+            'NAMESPACE' => self::$namespace,
+            'NAME' => 'GenericModelTrait',
+            'FUNCTIONS' => $functions
+        ];
+
+        $this->generator->make(
+            __DIR__.'/templates/trait.txt',
+            $templateData,
+            $filePathToGenerate
+        );
+        $this->info("Generated trait GenericModelTrait");
     }
 
     public function getTables() {
@@ -169,13 +210,27 @@ class GenerateModelsCommand extends GeneratorCommand
         $belongsTo = $rules['belongsTo'];
         $belongsToMany = $rules['belongsToMany'];
 
+        $relationsArray = '';
+        $uses = '';
 
         $fillable = implode(', ', $rules['fillable']);
 
-        $belongsToFunctions = $this->generateBelongsToFunctions($belongsTo);
-        $belongsToManyFunctions = $this->generateBelongsToManyFunctions($belongsToMany);
-        $hasManyFunctions = $this->generateHasManyFunctions($hasMany);
-        $hasOneFunctions = $this->generateHasOneFunctions($hasOne);
+        $belongsToFunctions = $this->generateBelongsToFunctions($belongsTo, $relationsArray);
+        $belongsToManyFunctions = $this->generateBelongsToManyFunctions($belongsToMany, $relationsArray);
+        $hasManyFunctions = $this->generateHasManyFunctions($hasMany, $relationsArray);
+        $hasOneFunctions = $this->generateHasOneFunctions($hasOne, $relationsArray);
+
+        if ($this->option('relations')) {
+            $uses = '
+    use GenericModelTrait;
+';
+
+            $relationsArray = '
+
+    /** @var array */
+    protected $modelRelations = [' . $relationsArray . ($relationsArray !== '' ? '
+    ' : '') . '];';
+        }
 
         $functions = $this->generateFunctions([
             $belongsToFunctions,
@@ -190,7 +245,9 @@ class GenerateModelsCommand extends GeneratorCommand
             'NAME' => $modelName,
             'TABLENAME' => $table,
             'FILLABLE' => $fillable,
-            'FUNCTIONS' => $functions
+            'FUNCTIONS' => $functions,
+            'RELATIONS' => $relationsArray,
+            'USES' => $uses,
         );
 
         $templatePath = $this->getTemplatePath();
@@ -244,7 +301,7 @@ class GenerateModelsCommand extends GeneratorCommand
         return $f;
     }
 
-    private function generateHasManyFunctions($rulesContainer)
+    private function generateHasManyFunctions($rulesContainer, &$relationsArray)
     {
         $functions = '';
         foreach ($rulesContainer as $rules) {
@@ -260,12 +317,26 @@ class GenerateModelsCommand extends GeneratorCommand
     }
 ";
             $functions .= $function;
+
+            if ($this->option('relations')) {
+                if ($relationsArray !== '') {
+                    $relationsArray .= ',';
+                }
+                $relationsArray .= "
+        [
+            'relationName' => '$hasManyFunctionName',
+            'relationType' => '" . HasMany::class . "',
+            'targetClass' => '" . self::$namespace.  "\\" . $hasManyModel . "',
+            'foreignKey' => '$key1',
+            'localKey' => '$key2'
+        ]";
+            }
         }
 
         return $functions;
     }
 
-    private function generateHasOneFunctions($rulesContainer)
+    private function generateHasOneFunctions($rulesContainer, &$relationsArray)
     {
         $functions = '';
         foreach ($rulesContainer as $rules) {
@@ -281,12 +352,26 @@ class GenerateModelsCommand extends GeneratorCommand
     }
 ";
             $functions .= $function;
+
+            if ($this->option('relations')) {
+                if ($relationsArray !== '') {
+                    $relationsArray .= ',';
+                }
+                $relationsArray .= "
+        [
+            'relationName' => '$hasOneFunctionName',
+            'relationType' => '" . HasOne::class . "',
+            'targetClass' => '" . self::$namespace . "\\" . $hasOneModel . "',
+            'foreignKey' => '$key1',
+            'localKey' => '$key2'
+        ]";
+            }
         }
 
         return $functions;
     }
 
-    private function generateBelongsToFunctions($rulesContainer)
+    private function generateBelongsToFunctions($rulesContainer, &$relationsArray)
     {
         $functions = '';
         foreach ($rulesContainer as $rules) {
@@ -302,12 +387,26 @@ class GenerateModelsCommand extends GeneratorCommand
     }
 ";
             $functions .= $function;
+
+            if ($this->option('relations')) {
+                if ($relationsArray !== '') {
+                    $relationsArray .= ',';
+                }
+                $relationsArray .= "
+        [
+            'relationName' => '$belongsToFunctionName',
+            'relationType' => '" . BelongsTo::class . "',
+            'targetClass' => '" . self::$namespace . "\\" . $belongsToModel . "',
+            'foreignKey' => '$key1',
+            'ownerKey' => '$key2'
+        ]";
+            }
         }
 
         return $functions;
     }
 
-    private function generateBelongsToManyFunctions($rulesContainer)
+    private function generateBelongsToManyFunctions($rulesContainer, &$relationsArray)
     {
         $functions = '';
         foreach ($rulesContainer as $rules) {
@@ -324,6 +423,20 @@ class GenerateModelsCommand extends GeneratorCommand
     }
 ";
             $functions .= $function;
+
+            if ($this->option('relations')) {
+                if ($relationsArray !== '') {
+                    $relationsArray .= ',';
+                }
+                $relationsArray .= "
+        [
+            'relationName' => '$belongsToManyFunctionName',
+            'relationType' => '" . BelongsToMany::class . "',
+            'targetClass' => '" . self::$namespace . "\\" . $belongsToManyModel . "',
+            'foreignKey' => '$key1',
+            'relatedKey' => '$key2'
+        ]";
+            }
         }
 
         return $functions;

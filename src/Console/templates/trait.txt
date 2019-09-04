@@ -1,0 +1,14 @@
+<?php namespace $NAMESPACE$;
+
+trait $NAME$ {
+
+    public function getAppends(): array
+    {
+        return $this->appends;
+    }
+
+    public function getModelRelations(): array
+    {
+        return $this->modelRelations;
+    }$FUNCTIONS$
+}
